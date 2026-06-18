@@ -1,0 +1,43 @@
+# Build directories
+build/
+cmake-build-*/
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Docker
+.dockerignore
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.bak
+*.cache
+
+# Compiled binaries
+bin/
+lib/
+
+# Test outputs
+test-results/
+coverage/

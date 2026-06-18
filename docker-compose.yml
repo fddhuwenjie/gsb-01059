@@ -1,0 +1,28 @@
+services:
+  test-server:
+    build:
+      context: ./test-server
+      dockerfile: Dockerfile
+    container_name: tcp-test-server
+    ports:
+      - "8889:8888"
+    networks:
+      - tcp-network
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: tcp-client-backend
+    depends_on:
+      test-server:
+        condition: service_started
+    networks:
+      - tcp-network
+    restart: "no"
+    command: ["sh", "-c", "sleep 2 && ./tcp_client_test test-server 8888"]
+
+networks:
+  tcp-network:
+    driver: bridge
