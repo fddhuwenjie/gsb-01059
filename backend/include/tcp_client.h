@@ -6,9 +6,33 @@
 #include <vector>
 #include <functional>
 #include <memory>
+#include <deque>
+#include <mutex>
+#include <atomic>
+#include <cstdint>
 #include "protocol.h"
 
 namespace tcp_client {
+
+enum class ConnectionState {
+    Disconnected = 0,
+    Resolving,
+    Connecting,
+    Connected,
+    Closing,
+};
+
+enum class ErrorCode {
+    Ok = 0,
+    NotConnected,
+    Timeout,
+    PeerClosed,
+    DecodeError,
+    ProtocolMismatch,
+    WriteFailed,
+    ConnectFailed,
+    Cancelled,
+};
 
 class TcpClient {
 public:
@@ -16,51 +40,60 @@ public:
     using WriteCallback = std::function<void(bool success, uint16_t dataSize)>;
     using ConnectCallback = std::function<void(bool success)>;
     using ErrorCallback = std::function<void(const std::string& error)>;
+    using DisconnectCallback = std::function<void()>;
 
     TcpClient();
     ~TcpClient();
 
-    // 禁止拷贝
     TcpClient(const TcpClient&) = delete;
     TcpClient& operator=(const TcpClient&) = delete;
 
-    // 连接到服务器
     bool Connect(const std::string& host, uint16_t port, ConnectCallback callback = nullptr);
-    
-    // 断开连接
+
     void Disconnect();
-    
-    // 检查连接状态
+
     bool IsConnected() const;
-    
-    // 读取数据
+    ConnectionState GetState() const;
+
     void ReadData(ReadCallback callback);
-    
-    // 写入数据
     void WriteData(const std::vector<uint8_t>& data, WriteCallback callback);
-    
-    // 设置错误回调
+
     void SetErrorCallback(ErrorCallback callback);
-    
-    // 运行事件循环（阻塞）
+    void SetDisconnectCallback(DisconnectCallback callback);
+
+    void SetRequestTimeout(uint64_t timeout_ms);
+
+    void EnableAutoReconnect(bool enable, uint32_t max_attempts = 5, uint64_t backoff_ms = 500);
+
     void Run();
-    
-    // 停止事件循环
     void Stop();
 
 private:
-    struct ClientData {
-        TcpClient* client;
-        uv_tcp_t* tcp;
-        uv_connect_t* connect_req;
-        std::vector<uint8_t> read_buffer;
-        size_t expected_size;
-        bool reading_header;
+    enum class TaskType { Read, Write, Disconnect, Connect };
+
+    struct PendingRequest {
+        uint16_t expected_func;
+        ReadCallback read_cb;
+        WriteCallback write_cb;
+        uv_timer_t* timer;
+        TcpClient* owner;
+        uint64_t seq;
+        bool done;
     };
-    
+
+    struct PendingTask {
+        TaskType type;
+        std::vector<uint8_t> payload;
+        ReadCallback read_cb;
+        WriteCallback write_cb;
+        ConnectCallback connect_cb;
+        std::string host;
+        uint16_t port;
+    };
+
     struct WriteRequestData {
         TcpClient* client;
-        char* buffer;  // 保存分配的缓冲区指针以便释放
+        char* buffer;
     };
 
     static void OnConnect(uv_connect_t* req, int status);
@@ -68,32 +101,63 @@ private:
     static void OnAlloc(uv_handle_t* handle, size_t suggested_size, uv_buf_t* buf);
     static void OnRead(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf);
     static void OnWrite(uv_write_t* req, int status);
-    static void OnClose(uv_handle_t* handle);
+    static void OnTcpClose(uv_handle_t* handle);
+    static void OnAsyncClose(uv_handle_t* handle);
+    static void OnTimerClose(uv_handle_t* handle);
     static void AsyncCallback(uv_async_t* handle);
+    static void OnRequestTimeout(uv_timer_t* timer);
+    static void OnReconnectTimer(uv_timer_t* timer);
 
+    void ProcessPendingTasks();
     void HandleMessage(const tcp_protocol::Message& msg);
-    void SendMessage(const tcp_protocol::Message& msg);
+    void DoSendMessage(const tcp_protocol::Message& msg);
+    void DoConnect(const std::string& host, uint16_t port, ConnectCallback cb);
+    void DoDisconnect(bool notify_user, ErrorCode code, const std::string& reason);
+    void StartRead();
+    void StopRead();
+    void FailAllPending(ErrorCode code, const std::string& reason);
+    void ScheduleReconnect();
+    void CleanupTcpHandle();
+    void ReportError(const std::string& msg);
+    void SetState(ConnectionState s);
+    void EnqueueTask(PendingTask task);
+    void NotifyAsync();
+    PendingRequest* MakePendingRequest(uint16_t expected_func);
+    void CompletePendingRequest(PendingRequest* req, bool success, const std::vector<uint8_t>& data, uint16_t dataSize);
 
     uv_loop_t* loop_;
     uv_tcp_t* tcp_;
-    uv_connect_t* connect_req_;
-    uv_getaddrinfo_t* getaddrinfo_req_;
     uv_async_t* async_;
-    bool connected_;
-    bool should_stop_;
-    
-    ClientData* client_data_;
-    std::string connect_host_;
-    uint16_t connect_port_;
-    
-    ReadCallback read_callback_;
-    WriteCallback write_callback_;
+    uv_getaddrinfo_t* getaddrinfo_req_;
+    uv_timer_t* reconnect_timer_;
+
+    std::atomic<ConnectionState> state_;
+    std::atomic<bool> should_stop_;
+
+    std::string host_;
+    uint16_t port_;
+
+    std::deque<PendingRequest*> pending_requests_;
+
+    std::vector<uint8_t> receive_buffer_;
+
+    std::mutex task_mutex_;
+    std::deque<PendingTask> task_queue_;
+
     ConnectCallback connect_callback_;
     ErrorCallback error_callback_;
-    
-    std::vector<uint8_t> receive_buffer_;
-    size_t expected_length_;
-    bool reading_header_;
+    DisconnectCallback disconnect_callback_;
+
+    uint64_t request_timeout_ms_;
+    uint64_t request_seq_;
+
+    bool auto_reconnect_;
+    uint32_t reconnect_max_;
+    uint32_t reconnect_attempts_;
+    uint64_t reconnect_backoff_ms_;
+
+    bool async_closed_;
+    bool reconnect_timer_closed_;
 };
 
 } // namespace tcp_client

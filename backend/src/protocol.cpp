@@ -35,6 +35,9 @@ std::vector<uint8_t> EncodeMessage(const Message& msg) {
 }
 
 bool DecodeMessage(const uint8_t* buffer, size_t size, Message& msg) {
+    if (buffer == nullptr) {
+        return false;
+    }
     if (size < HEADER_SIZE) {
         return false;
     }
@@ -66,18 +69,42 @@ bool DecodeMessage(const uint8_t* buffer, size_t size, Message& msg) {
         return false;
     }
     
-    // 验证长度
+    // 验证长度下限
+    if (msg.length < HEADER_SIZE) {
+        return false;
+    }
+
+    // 验证长度与传入 size 一致
     if (msg.length != size) {
         return false;
     }
-    
-    // 读取data（如果有，且消息长度大于HEADER_SIZE）
-    size_t dataSize = msg.dataSize;
-    if (dataSize > 0 && size > HEADER_SIZE) {
-        if (size < HEADER_SIZE + dataSize) {
+
+    // 验证 func / func2 一致性（防止半包错位带来的伪消息）
+    if (msg.func != msg.func2) {
+        return false;
+    }
+
+    // 对于"携带 data 的消息"（读响应/写请求），dataSize 必须与 length-HEADER 相等
+    // 对于"不携带 data 的消息"（读请求/写响应），length 必须等于 HEADER_SIZE，
+    // 但 dataSize 字段用于业务回传（如已写字节数），不参与帧长校验
+    size_t expected_payload = static_cast<size_t>(msg.length) - HEADER_SIZE;
+    bool has_data = (msg.func == FUNC_READ_RESPONSE) || (msg.func == FUNC_WRITE_REQUEST);
+    if (has_data) {
+        if (static_cast<size_t>(msg.dataSize) != expected_payload) {
             return false;
         }
-        msg.data.assign(buffer + offset, buffer + offset + dataSize);
+    } else {
+        if (expected_payload != 0) {
+            return false;
+        }
+    }
+
+    // 读取 data
+    if (expected_payload > 0) {
+        if (size < HEADER_SIZE + expected_payload) {
+            return false;
+        }
+        msg.data.assign(buffer + offset, buffer + offset + expected_payload);
     } else {
         msg.data.clear();
     }
