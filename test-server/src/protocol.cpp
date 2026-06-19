@@ -34,49 +34,59 @@ std::vector<uint8_t> EncodeMessage(const Message& msg) {
 }
 
 bool DecodeMessage(const uint8_t* buffer, size_t size, Message& msg) {
+    if (buffer == nullptr) {
+        return false;
+    }
     if (size < HEADER_SIZE) {
         return false;
     }
     
     size_t offset = 0;
     
-    // func (2 bytes, little-endian)
     msg.func = buffer[offset] | (buffer[offset + 1] << 8);
     offset += 2;
     
-    // magic (2 bytes, little-endian)
     msg.magic = buffer[offset] | (buffer[offset + 1] << 8);
     offset += 2;
     
-    // length (2 bytes, little-endian)
     msg.length = buffer[offset] | (buffer[offset + 1] << 8);
     offset += 2;
     
-    // func2 (2 bytes, little-endian)
     msg.func2 = buffer[offset] | (buffer[offset + 1] << 8);
     offset += 2;
     
-    // dataSize (2 bytes, little-endian)
     msg.dataSize = buffer[offset] | (buffer[offset + 1] << 8);
     offset += 2;
     
-    // 验证魔数
     if (msg.magic != MAGIC) {
         return false;
     }
-    
-    // 验证长度
+    if (msg.length < HEADER_SIZE) {
+        return false;
+    }
     if (msg.length != size) {
         return false;
     }
-    
-    // 读取data（如果有，且消息长度大于HEADER_SIZE）
-    size_t dataSize = msg.dataSize;
-    if (dataSize > 0 && size > HEADER_SIZE) {
-        if (size < HEADER_SIZE + dataSize) {
+    if (msg.func != msg.func2) {
+        return false;
+    }
+    size_t expected_payload = static_cast<size_t>(msg.length) - HEADER_SIZE;
+    bool has_data = (msg.func == FUNC_READ_RESPONSE) || (msg.func == FUNC_WRITE_REQUEST);
+    if (has_data) {
+        if (static_cast<size_t>(msg.dataSize) != expected_payload) {
             return false;
         }
-        msg.data.assign(buffer + offset, buffer + offset + dataSize);
+    } else {
+        if (expected_payload != 0) {
+            return false;
+        }
+    }
+
+    if (expected_payload > 0) {
+        if (size < HEADER_SIZE + expected_payload) {
+            return false;
+        }
+        msg.data.assign(buffer + offset, buffer + offset + expected_payload);
     } else {
         msg.data.clear();
     }
